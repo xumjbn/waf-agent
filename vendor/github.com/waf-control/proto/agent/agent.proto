@@ -1,0 +1,195 @@
+syntax = "proto3";
+
+package agent;
+
+option go_package = "github.com/waf-control/proto/agent";
+
+import "google/protobuf/timestamp.proto";
+
+// AgentService defines the bidirectional communication between
+// the WAF control server and node agents.
+service AgentService {
+  // Register allows a node agent to register itself with the control server.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Heartbeat sends periodic health status from agent to server.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // PushConfig streams configuration updates from server to agent.
+  rpc PushConfig(ConfigRequest) returns (stream ConfigUpdate);
+
+  // ReportMetrics sends node metrics from agent to server.
+  rpc ReportMetrics(MetricsRequest) returns (MetricsResponse);
+
+  // ReportLogs streams security logs from agent to server.
+  rpc ReportLogs(stream LogEntry) returns (LogResponse);
+
+  // ExecuteCommand sends one-off commands from server to agent.
+  rpc ExecuteCommand(CommandRequest) returns (CommandResponse);
+
+  // ReportDeployResult allows an agent to report the result of applying a config update.
+  rpc ReportDeployResult(DeployResult) returns (DeployResultResponse);
+}
+
+// --- Registration ---
+
+message RegisterRequest {
+  string node_id = 1;
+  string hostname = 2;
+  string ip_address = 3;
+  string version = 4;
+  map<string, string> labels = 5;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string message = 2;
+  string assigned_id = 3;
+  int32 heartbeat_interval_sec = 4;
+}
+
+// --- Heartbeat ---
+
+message HeartbeatRequest {
+  string node_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  NodeStatus status = 3;
+  ResourceUsage resources = 4;
+}
+
+message NodeStatus {
+  enum State {
+    UNKNOWN = 0;
+    HEALTHY = 1;
+    DEGRADED = 2;
+    ERROR = 3;
+  }
+  State state = 1;
+  string message = 2;
+  int64 uptime_seconds = 3;
+  int64 active_connections = 4;
+  int64 requests_per_second = 5;
+}
+
+message ResourceUsage {
+  double cpu_percent = 1;
+  double memory_percent = 2;
+  int64 memory_used_bytes = 3;
+  double disk_percent = 4;
+  int64 disk_used_bytes = 5;
+}
+
+message HeartbeatResponse {
+  bool ack = 1;
+  repeated PendingAction actions = 2;
+}
+
+message PendingAction {
+  string action_id = 1;
+  string type = 2;
+  bytes payload = 3;
+}
+
+// --- Config Push ---
+
+message ConfigRequest {
+  string node_id = 1;
+  string current_version = 2;
+}
+
+message ConfigUpdate {
+  string version = 1;
+  ConfigType type = 2;
+  bytes payload = 3;
+  google.protobuf.Timestamp timestamp = 4;
+
+  enum ConfigType {
+    FULL = 0;
+    SITE = 1;
+    POLICY = 2;
+    ACL = 3;
+    NETWORK = 4;
+    CERTIFICATE = 5;
+  }
+}
+
+// --- Metrics ---
+
+message MetricsRequest {
+  string node_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  repeated Metric metrics = 3;
+}
+
+message Metric {
+  string name = 1;
+  double value = 2;
+  map<string, string> labels = 3;
+}
+
+message MetricsResponse {
+  bool ack = 1;
+}
+
+// --- Logs ---
+
+message LogEntry {
+  string node_id = 1;
+  LogType type = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+  bytes payload = 4;
+
+  enum LogType {
+    ATTACK = 0;
+    ANTIVIRUS = 1;
+    ANTITAMPER = 2;
+    ACCESS = 3;
+  }
+}
+
+message LogResponse {
+  int64 received_count = 1;
+  bool ack = 2;
+}
+
+// --- Command ---
+
+message CommandRequest {
+  string node_id = 1;
+  string command_id = 2;
+  CommandType type = 3;
+  bytes payload = 4;
+  int32 timeout_sec = 5;
+
+  enum CommandType {
+    RELOAD_CONFIG = 0;
+    RESTART_SERVICE = 1;
+    UPDATE_AGENT = 2;
+    COLLECT_DIAGNOSTICS = 3;
+    CLEAR_CACHE = 4;
+    SYNC_RULES = 5;
+  }
+}
+
+message CommandResponse {
+  string command_id = 1;
+  bool success = 2;
+  string message = 3;
+  bytes result = 4;
+  int32 exit_code = 5;
+}
+
+// --- Deploy Result ---
+
+message DeployResult {
+  string node_id = 1;
+  string version = 2;
+  string type = 3;
+  bool success = 4;
+  string message = 5;
+  google.protobuf.Timestamp applied_at = 6;
+}
+
+message DeployResultResponse {
+  bool ack = 1;
+}

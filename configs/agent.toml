@@ -1,0 +1,23 @@
+# waf-agent configuration
+
+[agent]
+node_id = "node-01"
+hostname = "waf-node-01"
+data_dir = "/var/lib/waf-agent"
+
+[server]
+address = "localhost:50051"
+tls_enabled = false
+tls_ca_cert = ""
+reconnect_backoff_sec = 5
+
+[nginx]
+config_dir = "/etc/nginx/conf.d"
+modsec_dir = "/etc/modsecurity.d"
+ssl_dir = "/etc/nginx/ssl"
+reload_cmd = "nginx -s reload"
+test_cmd = "nginx -t"
+backup_enabled = true
+
+[collector]
+interval_sec = 10
