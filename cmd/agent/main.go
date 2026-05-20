@@ -11,6 +11,7 @@ import (
 	"github.com/waf-agent/internal/applier"
 	"github.com/waf-agent/internal/config"
 	"github.com/waf-agent/internal/grpcclient"
+	"github.com/waf-agent/internal/reporter"
 )
 
 func main() {
@@ -34,11 +35,22 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 1. gRPC 会话（register / heartbeat / config push）
 	go func() {
 		if err := client.Run(ctx); err != nil {
 			slog.Error("client run error", "error", err)
 		}
 	}()
+
+	// 2. REST 上报（攻击日志 / 命中计数 / 站点指标）— 与 waf-control feat/backend-* 对接
+	if cfg.Reporter.Enabled && cfg.Reporter.BaseURL != "" {
+		rep := reporter.New(cfg, cfg.Reporter.BaseURL, cfg.Reporter.AuthToken)
+		client.AttachReporter(rep)
+		slog.Info("reporter enabled", "base_url", cfg.Reporter.BaseURL)
+		go rep.Run(ctx)
+	} else {
+		slog.Info("reporter disabled — set [reporter].enabled=true and base_url to upload attack logs / metrics over REST")
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
