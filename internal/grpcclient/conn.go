@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/waf-agent/internal/config"
+	"github.com/waf-agent/internal/reporter"
 	pb "github.com/waf-control/proto/agent"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -21,6 +22,12 @@ type Client struct {
 	conn   *grpc.ClientConn
 	agent  pb.AgentServiceClient
 	apply  ConfigApplier
+	report *reporter.Reporter // 可空：REST 上报器
+}
+
+// AttachReporter 让 grpcclient 把心跳采集到的 ResourceUsage 同步推给 REST reporter。
+func (c *Client) AttachReporter(r *reporter.Reporter) {
+	c.report = r
 }
 
 type ConfigApplier interface {
@@ -185,14 +192,29 @@ func (c *Client) heartbeatLoop(ctx context.Context, interval time.Duration) {
 func (c *Client) sendHeartbeat(ctx context.Context) {
 	metrics := collectMetrics()
 
+	// RPS 计算占位（未来由 nginx access_log / modsec hits 抽取）；先用 0 表示未知。
+	const rpsPlaceholder int64 = 0
+
 	req := &pb.HeartbeatRequest{
 		NodeId:    c.cfg.Agent.NodeID,
-		Status:    &pb.NodeStatus{State: pb.NodeStatus_HEALTHY},
+		Status:    &pb.NodeStatus{State: pb.NodeStatus_HEALTHY, RequestsPerSecond: rpsPlaceholder},
 		Resources: metrics,
 	}
 
 	if _, err := c.agent.Heartbeat(ctx, req); err != nil {
 		slog.Warn("heartbeat failed", "error", err)
+	}
+
+	// REST 上报：当 reporter 启用 + 配置里给了 site_id 时，同步推一份 SiteMetrics
+	if c.report != nil && len(c.cfg.Agent.SiteIDs) > 0 {
+		for _, sid := range c.cfg.Agent.SiteIDs {
+			c.report.PushSiteMetrics(sid, reporter.SiteMetricsPayload{
+				RPS:              float64(rpsPlaceholder),
+				BlockedRate:      0, // 未来由 modsec/awesomerule 计算
+				InstanceLabel:    c.cfg.Agent.Hostname,
+				MetricsUpdatedAt: time.Now(),
+			})
+		}
 	}
 }
 

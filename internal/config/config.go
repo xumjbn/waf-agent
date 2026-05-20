@@ -12,12 +12,23 @@ type Config struct {
 	Server    ServerConfig    `mapstructure:"server"`
 	Nginx     NginxConfig     `mapstructure:"nginx"`
 	Collector CollectorConfig `mapstructure:"collector"`
+	Reporter  ReporterConfig  `mapstructure:"reporter"`
+}
+
+// ReporterConfig 控制 internal/reporter（REST 上报器）。
+// BaseURL = waf-control HTTP 入口，例如 http://control.local:9200
+// AuthToken = 静态 token（管理员账号 issue），用于 Bearer 鉴权
+type ReporterConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	BaseURL   string `mapstructure:"base_url"`
+	AuthToken string `mapstructure:"auth_token"`
 }
 
 type AgentConfig struct {
-	NodeID   string `mapstructure:"node_id"`
-	Hostname string `mapstructure:"hostname"`
-	DataDir  string `mapstructure:"data_dir"`
+	NodeID   string  `mapstructure:"node_id"`
+	Hostname string  `mapstructure:"hostname"`
+	DataDir  string  `mapstructure:"data_dir"`
+	SiteIDs  []int64 `mapstructure:"site_ids"` // 该节点接管的站点 ID 列表，用于 PUT /sites/{id}/metrics
 }
 
 type ServerConfig struct {
