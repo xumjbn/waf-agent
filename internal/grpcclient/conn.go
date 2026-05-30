@@ -29,6 +29,8 @@ type Client struct {
 	// nginx stub_status 采样上一次的累计请求数 + 时间，用于算 RPS 速率。
 	prevRequests int64
 	prevSampleAt time.Time
+	// 上一次心跳时 reporter 的累计拦截数，用于算窗口内拦截率。
+	prevBlocked int64
 }
 
 // AttachReporter 让 grpcclient 把心跳采集到的 ResourceUsage 同步推给 REST reporter。
@@ -281,15 +283,40 @@ func (c *Client) sendHeartbeat(ctx context.Context) {
 
 	// REST 上报：当 reporter 启用 + 配置里给了 site_id 时，同步推一份 SiteMetrics
 	if c.report != nil && len(c.cfg.Agent.SiteIDs) > 0 {
+		blockedRate := c.sampleBlockedRate(rps)
 		for _, sid := range c.cfg.Agent.SiteIDs {
 			c.report.PushSiteMetrics(sid, reporter.SiteMetricsPayload{
 				RPS:              float64(rps),
-				BlockedRate:      0, // 未来由 modsec/awesomerule 计算
+				BlockedRate:      blockedRate,
 				InstanceLabel:    c.cfg.Agent.Hostname,
 				MetricsUpdatedAt: time.Now(),
 			})
 		}
 	}
+}
+
+// sampleBlockedRate 用审计日志 tailer 累计的拦截数增量 / 本窗口请求数算拦截率（%）。
+// rps 是每秒请求数，本窗口请求估算 = rps × 心跳间隔（约 10s）。无 reporter 返回 0。
+func (c *Client) sampleBlockedRate(rps int64) float64 {
+	if c.report == nil {
+		return 0
+	}
+	blockedNow := c.report.BlockedTotal()
+	delta := blockedNow - c.prevBlocked
+	c.prevBlocked = blockedNow
+	if delta <= 0 {
+		return 0
+	}
+	// 本窗口请求估算（心跳间隔约 10s）。避免除 0。
+	windowReq := rps * 10
+	if windowReq <= 0 {
+		return 0
+	}
+	rate := float64(delta) / float64(windowReq) * 100
+	if rate > 100 {
+		rate = 100
+	}
+	return rate
 }
 
 // sampleRPS 抓 nginx stub_status，把活动连接写进 metrics，并用两次采样的

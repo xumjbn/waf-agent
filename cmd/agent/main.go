@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/waf-agent/internal/applier"
+	"github.com/waf-agent/internal/auditlog"
 	"github.com/waf-agent/internal/config"
 	"github.com/waf-agent/internal/grpcclient"
 	"github.com/waf-agent/internal/reporter"
@@ -48,6 +49,15 @@ func main() {
 		client.AttachReporter(rep)
 		slog.Info("reporter enabled", "base_url", cfg.Reporter.BaseURL)
 		go rep.Run(ctx)
+
+		// 3. modsec 审计日志 tailer：真实采集攻击事件上报 + 累计拦截数（算拦截率）。
+		if cfg.Nginx.AuditLog != "" {
+			tailer := auditlog.New(cfg.Nginx.AuditLog, cfg.Agent.NodeID, rep)
+			go tailer.Run(ctx, cfg.Collector.IntervalSec)
+			slog.Info("audit log tailer enabled", "path", cfg.Nginx.AuditLog)
+		} else {
+			slog.Info("audit log tailer disabled — set [nginx].audit_log to ingest real attacks")
+		}
 	} else {
 		slog.Info("reporter disabled — set [reporter].enabled=true and base_url to upload attack logs / metrics over REST")
 	}

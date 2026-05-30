@@ -48,6 +48,9 @@ type NginxConfig struct {
 	// StatusURL 指向 nginx stub_status 端点（如 http://127.0.0.1/nginx_status）。
 	// 配了才采集真实 RPS / 活动连接；留空则 RPS=0（保持旧行为）。
 	StatusURL string `mapstructure:"status_url"`
+	// AuditLog 指向 modsec JSON 审计日志（SecAuditLogFormat JSON）。配了才启用
+	// 审计日志 tailer —— 真实采集攻击事件上报 + 计算拦截率。留空则不采集。
+	AuditLog string `mapstructure:"audit_log"`
 }
 
 type CollectorConfig struct {

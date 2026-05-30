@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/waf-agent/internal/config"
@@ -73,7 +74,17 @@ type Reporter struct {
 	attackQueue []AttackLogPayload
 	hitQueue    map[int64]int64 // policyID -> delta
 	siteQueue   map[int64]SiteMetricsPayload
+
+	// blockedTotal 是审计日志 tailer 累计观察到的「被拦截」事件数（单调递增）。
+	// conn.go 心跳读它的增量 / 请求增量算拦截率。用 atomic 避免锁竞争。
+	blockedTotal atomic.Int64
 }
+
+// IncBlocked 由审计日志 tailer 在发现一条被拦截事件时调用。
+func (r *Reporter) IncBlocked() { r.blockedTotal.Add(1) }
+
+// BlockedTotal 返回累计被拦截事件数。
+func (r *Reporter) BlockedTotal() int64 { return r.blockedTotal.Load() }
 
 func New(cfg *config.Config, baseURL, token string) *Reporter {
 	return &Reporter{
