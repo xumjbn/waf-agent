@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/waf-agent/internal/config"
+	"github.com/waf-agent/internal/engine"
 	"github.com/waf-agent/internal/reporter"
 	pb "github.com/waf-control/proto/agent"
 	"google.golang.org/grpc"
@@ -23,10 +24,10 @@ type Client struct {
 	cfg    *config.Config
 	conn   *grpc.ClientConn
 	agent  pb.AgentServiceClient
-	apply  ConfigApplier
+	engine engine.Engine
 	report *reporter.Reporter // 可空：REST 上报器
 
-	// nginx stub_status 采样上一次的累计请求数 + 时间，用于算 RPS 速率。
+	// 引擎运行时指标上一次采样的累计请求数 + 时间，用于算 RPS 速率。
 	prevRequests int64
 	prevSampleAt time.Time
 	// 上一次心跳时 reporter 的累计拦截数，用于算窗口内拦截率。
@@ -36,12 +37,6 @@ type Client struct {
 // AttachReporter 让 grpcclient 把心跳采集到的 ResourceUsage 同步推给 REST reporter。
 func (c *Client) AttachReporter(r *reporter.Reporter) {
 	c.report = r
-}
-
-type ConfigApplier interface {
-	ApplyNginx(ctx context.Context, domain string, payload []byte) error
-	ApplyModsec(ctx context.Context, domain string, payload []byte) error
-	Reload(ctx context.Context) error
 }
 
 // configTypeCommand 与 control 端 agent.configTypeCommand 对齐（proto COMMAND=6）。
@@ -55,8 +50,8 @@ type agentCommand struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-func New(cfg *config.Config, apply ConfigApplier) *Client {
-	return &Client{cfg: cfg, apply: apply}
+func New(cfg *config.Config, eng engine.Engine) *Client {
+	return &Client{cfg: cfg, engine: eng}
 }
 
 func (c *Client) Connect(ctx context.Context) error {
@@ -118,12 +113,13 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 	defer c.conn.Close()
 
-	// 1. Register
+	// 1. Register（labels 带引擎类型，control 据此显示节点用什么引擎）
 	regResp, err := c.agent.Register(ctx, &pb.RegisterRequest{
 		NodeId:    c.cfg.Agent.NodeID,
 		Hostname:  c.cfg.Agent.Hostname,
 		IpAddress: getLocalIP(),
 		Version:   "1.0.0",
+		Labels:    map[string]string{"engine": c.engine.Name()},
 	})
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
@@ -170,9 +166,9 @@ func (c *Client) handleConfigUpdate(ctx context.Context, update *pb.ConfigUpdate
 
 	switch update.Type {
 	case pb.ConfigUpdate_SITE, pb.ConfigUpdate_FULL:
-		applyErr = c.apply.ApplyNginx(ctx, domain, update.Payload)
+		applyErr = c.engine.ApplySite(ctx, domain, update.Payload)
 	case pb.ConfigUpdate_POLICY:
-		applyErr = c.apply.ApplyModsec(ctx, domain, update.Payload)
+		applyErr = c.engine.ApplyPolicy(ctx, domain, update.Payload)
 	default:
 		slog.Debug("ignoring config type", "type", update.Type.String())
 		return
@@ -220,7 +216,7 @@ func (c *Client) handleCommand(ctx context.Context, payload []byte) {
 		c.Close()
 		os.Exit(0)
 	case "reload_config", "sync_rules":
-		err := c.apply.Reload(ctx)
+		err := c.engine.Reload(ctx)
 		if err != nil {
 			slog.Error("reload failed", "command", cmd.Command, "error", err)
 			c.reportCommandResult(cmd.CommandID, false, err.Error())
@@ -319,22 +315,18 @@ func (c *Client) sampleBlockedRate(rps int64) float64 {
 	return rate
 }
 
-// sampleRPS 抓 nginx stub_status，把活动连接写进 metrics，并用两次采样的
-// 累计请求差 / 时间差算 RPS。首次采样或未配 status_url 时返回 0。
+// sampleRPS 从引擎取运行时指标，把活动连接写进 metrics，并用两次采样的
+// 累计请求差 / 时间差算 RPS。引擎无指标源（Available=false）时返回 0。
 func (c *Client) sampleRPS(metrics *pb.ResourceUsage) int64 {
-	if c.cfg.Nginx.StatusURL == "" {
-		return 0
-	}
-	st, err := scrapeNginxStatus(c.cfg.Nginx.StatusURL)
-	if err != nil {
-		slog.Debug("nginx status scrape failed", "error", err)
+	st := c.engine.CollectRuntime(context.Background())
+	if !st.Available {
 		return 0
 	}
 	metrics.NetConnections = st.ActiveConnections
 
 	now := time.Now()
 	var rps int64
-	// 仅当有上次样本、且计数未回绕（nginx 重启会清零）时才算速率。
+	// 仅当有上次样本、且计数未回绕（引擎重启会清零）时才算速率。
 	if !c.prevSampleAt.IsZero() && st.TotalRequests >= c.prevRequests {
 		elapsed := now.Sub(c.prevSampleAt).Seconds()
 		if elapsed > 0 {

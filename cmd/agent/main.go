@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/waf-agent/internal/applier"
 	"github.com/waf-agent/internal/auditlog"
 	"github.com/waf-agent/internal/config"
+	"github.com/waf-agent/internal/engine"
 	"github.com/waf-agent/internal/grpcclient"
 	"github.com/waf-agent/internal/reporter"
 )
@@ -27,10 +27,11 @@ func main() {
 
 	setupLogger()
 
-	slog.Info("waf-agent starting", "hostname", cfg.Agent.Hostname)
+	// 按 [engine].type 装配后端引擎（nginx / openresty / safeline），改配置重启切换。
+	eng := engine.New(cfg)
+	slog.Info("waf-agent starting", "hostname", cfg.Agent.Hostname, "engine", eng.Name())
 
-	app := applier.New(cfg)
-	client := grpcclient.New(cfg, app)
+	client := grpcclient.New(cfg, eng)
 	defer client.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,13 +51,14 @@ func main() {
 		slog.Info("reporter enabled", "base_url", cfg.Reporter.BaseURL)
 		go rep.Run(ctx)
 
-		// 3. modsec 审计日志 tailer：真实采集攻击事件上报 + 累计拦截数（算拦截率）。
-		if cfg.Nginx.AuditLog != "" {
-			tailer := auditlog.New(cfg.Nginx.AuditLog, cfg.Agent.NodeID, rep)
+		// 3. 引擎审计日志 tailer：真实采集攻击事件上报 + 累计拦截数（算拦截率）。
+		//    解析格式由引擎决定（modsec JSON / 雷池日志 / ...）。
+		if eng.AuditLogPath() != "" {
+			tailer := auditlog.New(eng, rep)
 			go tailer.Run(ctx, cfg.Collector.IntervalSec)
-			slog.Info("audit log tailer enabled", "path", cfg.Nginx.AuditLog)
+			slog.Info("audit log tailer enabled", "engine", eng.Name(), "path", eng.AuditLogPath())
 		} else {
-			slog.Info("audit log tailer disabled — set [nginx].audit_log to ingest real attacks")
+			slog.Info("audit log tailer disabled — engine has no audit log path configured")
 		}
 	} else {
 		slog.Info("reporter disabled — set [reporter].enabled=true and base_url to upload attack logs / metrics over REST")

@@ -10,9 +10,25 @@ import (
 type Config struct {
 	Agent     AgentConfig     `mapstructure:"agent"`
 	Server    ServerConfig    `mapstructure:"server"`
+	Engine    EngineConfig    `mapstructure:"engine"`
 	Nginx     NginxConfig     `mapstructure:"nginx"`
+	SafeLine  SafeLineConfig  `mapstructure:"safeline"`
 	Collector CollectorConfig `mapstructure:"collector"`
 	Reporter  ReporterConfig  `mapstructure:"reporter"`
+}
+
+// EngineConfig 选择后端代理/检测引擎。type 取 nginx / openresty / safeline。
+// 空默认 nginx。切换方式：改本配置后重启 agent（启动期装配）。
+type EngineConfig struct {
+	Type string `mapstructure:"type"`
+}
+
+// SafeLineConfig 雷池（长亭 SafeLine）引擎对接参数。当前为骨架，
+// 实际对接雷池管理 API 时填充。
+type SafeLineConfig struct {
+	APIBaseURL string `mapstructure:"api_base_url"` // 雷池管理 API，如 https://safeline-mgt:9443
+	APIToken   string `mapstructure:"api_token"`
+	AuditLog   string `mapstructure:"audit_log"` // 雷池攻击日志路径（若走文件）
 }
 
 // ReporterConfig 控制 internal/reporter（REST 上报器）。
