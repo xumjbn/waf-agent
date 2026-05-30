@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Client struct {
@@ -33,6 +35,18 @@ func (c *Client) AttachReporter(r *reporter.Reporter) {
 type ConfigApplier interface {
 	ApplyNginx(ctx context.Context, domain string, payload []byte) error
 	ApplyModsec(ctx context.Context, domain string, payload []byte) error
+	Reload(ctx context.Context) error
+}
+
+// configTypeCommand 与 control 端 agent.configTypeCommand 对齐（proto COMMAND=6）。
+// proto3 枚举开放，regen 后可换成具名 pb.ConfigUpdate_COMMAND。
+const configTypeCommand = pb.ConfigUpdate_ConfigType(6)
+
+// agentCommand 对齐 control 端 agent.AgentCommand。
+type agentCommand struct {
+	CommandID string `json:"command_id"`
+	Command   string `json:"command"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 func New(cfg *config.Config, apply ConfigApplier) *Client {
@@ -139,6 +153,12 @@ func (c *Client) runSession(ctx context.Context) error {
 func (c *Client) handleConfigUpdate(ctx context.Context, update *pb.ConfigUpdate) {
 	slog.Info("received config update", "version", update.Version, "type", update.Type.String())
 
+	// COMMAND（值 6）：一次性命令，走独立分支。
+	if update.Type == configTypeCommand {
+		c.handleCommand(ctx, update.Payload)
+		return
+	}
+
 	var applyErr error
 	domain := "default"
 
@@ -172,6 +192,56 @@ func (c *Client) handleConfigUpdate(ctx context.Context, update *pb.ConfigUpdate
 	defer cancel()
 	if _, err := c.agent.ReportDeployResult(rctx, result); err != nil {
 		slog.Warn("report deploy result failed", "error", err)
+	}
+}
+
+// handleCommand 执行 control 下发的一次性命令（payload 为 JSON agentCommand）。
+//   restart_service          优雅退出 → 容器/systemd 重启（PID1 退出即重启）
+//   reload_config/sync_rules nginx -s reload，进程不退
+func (c *Client) handleCommand(ctx context.Context, payload []byte) {
+	var cmd agentCommand
+	if err := json.Unmarshal(payload, &cmd); err != nil {
+		slog.Warn("invalid command payload", "error", err)
+		return
+	}
+	slog.Info("received command", "command", cmd.Command, "command_id", cmd.CommandID, "reason", cmd.Reason)
+
+	switch cmd.Command {
+	case "restart_service":
+		slog.Warn("restart command — exiting for supervisor restart", "command_id", cmd.CommandID)
+		c.reportCommandResult(cmd.CommandID, true, "restarting")
+		// 退出让 PID1 supervisor（容器 entrypoint / systemd）重新拉起 agent。
+		c.Close()
+		os.Exit(0)
+	case "reload_config", "sync_rules":
+		err := c.apply.Reload(ctx)
+		if err != nil {
+			slog.Error("reload failed", "command", cmd.Command, "error", err)
+			c.reportCommandResult(cmd.CommandID, false, err.Error())
+		} else {
+			slog.Info("reload ok", "command", cmd.Command)
+			c.reportCommandResult(cmd.CommandID, true, "reloaded")
+		}
+	default:
+		slog.Warn("unknown command", "command", cmd.Command)
+		c.reportCommandResult(cmd.CommandID, false, "unknown command")
+	}
+}
+
+// reportCommandResult 借用 ReportDeployResult 把命令执行结果回报 control（best-effort）。
+func (c *Client) reportCommandResult(commandID string, success bool, message string) {
+	rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := c.agent.ReportDeployResult(rctx, &pb.DeployResult{
+		NodeId:    c.cfg.Agent.NodeID,
+		Version:   commandID,
+		Type:      "command",
+		Success:   success,
+		Message:   message,
+		AppliedAt: timestamppb.Now(),
+	})
+	if err != nil {
+		slog.Debug("report command result failed", "error", err)
 	}
 }
 
