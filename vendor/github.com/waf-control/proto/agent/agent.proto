@@ -77,6 +77,21 @@ message ResourceUsage {
   int64 memory_used_bytes = 3;
   double disk_percent = 4;
   int64 disk_used_bytes = 5;
+  int64 memory_total_bytes = 6;
+  int64 disk_total_bytes = 7;
+  int64 net_connections = 8;
+  int64 requests_per_second = 9;
+  string network_io = 10;
+  repeated NetInterface interfaces = 11;
+}
+
+message NetInterface {
+  string name = 1;
+  string state = 2;
+  string ip = 3;
+  string mac = 4;
+  int64 rx_bytes = 5;
+  int64 tx_bytes = 6;
 }
 
 message HeartbeatResponse {
@@ -110,6 +125,10 @@ message ConfigUpdate {
     ACL = 3;
     NETWORK = 4;
     CERTIFICATE = 5;
+    // COMMAND 复用 PushConfig 下行流投递一次性命令（payload 为 JSON：
+    // {command_id, command, reason}）。proto3 枚举开放，当前代码用值 6 直接引用，
+    // 待 protoc regen 后即有具名常量 ConfigUpdate_COMMAND。
+    COMMAND = 6;
   }
 }
 

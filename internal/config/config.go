@@ -45,6 +45,9 @@ type NginxConfig struct {
 	ReloadCmd      string `mapstructure:"reload_cmd"`
 	TestCmd        string `mapstructure:"test_cmd"`
 	BackupEnabled  bool   `mapstructure:"backup_enabled"`
+	// StatusURL 指向 nginx stub_status 端点（如 http://127.0.0.1/nginx_status）。
+	// 配了才采集真实 RPS / 活动连接；留空则 RPS=0（保持旧行为）。
+	StatusURL string `mapstructure:"status_url"`
 }
 
 type CollectorConfig struct {

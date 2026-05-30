@@ -25,6 +25,10 @@ type Client struct {
 	agent  pb.AgentServiceClient
 	apply  ConfigApplier
 	report *reporter.Reporter // 可空：REST 上报器
+
+	// nginx stub_status 采样上一次的累计请求数 + 时间，用于算 RPS 速率。
+	prevRequests int64
+	prevSampleAt time.Time
 }
 
 // AttachReporter 让 grpcclient 把心跳采集到的 ResourceUsage 同步推给 REST reporter。
@@ -262,12 +266,12 @@ func (c *Client) heartbeatLoop(ctx context.Context, interval time.Duration) {
 func (c *Client) sendHeartbeat(ctx context.Context) {
 	metrics := collectMetrics()
 
-	// RPS 计算占位（未来由 nginx access_log / modsec hits 抽取）；先用 0 表示未知。
-	const rpsPlaceholder int64 = 0
+	// 从 nginx stub_status 抓真实 RPS / 活动连接（配了 status_url 才采）。
+	rps := c.sampleRPS(metrics)
 
 	req := &pb.HeartbeatRequest{
 		NodeId:    c.cfg.Agent.NodeID,
-		Status:    &pb.NodeStatus{State: pb.NodeStatus_HEALTHY, RequestsPerSecond: rpsPlaceholder},
+		Status:    &pb.NodeStatus{State: pb.NodeStatus_HEALTHY, RequestsPerSecond: rps},
 		Resources: metrics,
 	}
 
@@ -279,13 +283,41 @@ func (c *Client) sendHeartbeat(ctx context.Context) {
 	if c.report != nil && len(c.cfg.Agent.SiteIDs) > 0 {
 		for _, sid := range c.cfg.Agent.SiteIDs {
 			c.report.PushSiteMetrics(sid, reporter.SiteMetricsPayload{
-				RPS:              float64(rpsPlaceholder),
+				RPS:              float64(rps),
 				BlockedRate:      0, // 未来由 modsec/awesomerule 计算
 				InstanceLabel:    c.cfg.Agent.Hostname,
 				MetricsUpdatedAt: time.Now(),
 			})
 		}
 	}
+}
+
+// sampleRPS 抓 nginx stub_status，把活动连接写进 metrics，并用两次采样的
+// 累计请求差 / 时间差算 RPS。首次采样或未配 status_url 时返回 0。
+func (c *Client) sampleRPS(metrics *pb.ResourceUsage) int64 {
+	if c.cfg.Nginx.StatusURL == "" {
+		return 0
+	}
+	st, err := scrapeNginxStatus(c.cfg.Nginx.StatusURL)
+	if err != nil {
+		slog.Debug("nginx status scrape failed", "error", err)
+		return 0
+	}
+	metrics.NetConnections = st.ActiveConnections
+
+	now := time.Now()
+	var rps int64
+	// 仅当有上次样本、且计数未回绕（nginx 重启会清零）时才算速率。
+	if !c.prevSampleAt.IsZero() && st.TotalRequests >= c.prevRequests {
+		elapsed := now.Sub(c.prevSampleAt).Seconds()
+		if elapsed > 0 {
+			rps = int64(float64(st.TotalRequests-c.prevRequests) / elapsed)
+		}
+	}
+	c.prevRequests = st.TotalRequests
+	c.prevSampleAt = now
+	metrics.RequestsPerSecond = rps
+	return rps
 }
 
 func (c *Client) Close() {
