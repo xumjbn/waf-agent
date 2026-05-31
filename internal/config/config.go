@@ -12,15 +12,33 @@ type Config struct {
 	Server    ServerConfig    `mapstructure:"server"`
 	Engine    EngineConfig    `mapstructure:"engine"`
 	Nginx     NginxConfig     `mapstructure:"nginx"`
+	Caddy     CaddyConfig     `mapstructure:"caddy"`
 	SafeLine  SafeLineConfig  `mapstructure:"safeline"`
 	Collector CollectorConfig `mapstructure:"collector"`
 	Reporter  ReporterConfig  `mapstructure:"reporter"`
 }
 
-// EngineConfig 选择后端代理/检测引擎。type 取 nginx / openresty / safeline。
-// 空默认 nginx。切换方式：改本配置后重启 agent（启动期装配）。
+// EngineConfig 选择后端代理/检测引擎。type 取 nginx / openresty / caddy-coraza /
+// safeline。空默认 nginx。切换方式：改本配置后重启 agent（启动期装配）。
 type EngineConfig struct {
 	Type string `mapstructure:"type"`
+}
+
+// CaddyConfig 是 Caddy + OWASP Coraza 引擎参数（仅 [engine].type = "caddy-coraza"
+// 时生效）。Caddy 当宿主（反代/自动 HTTPS），coraza-caddy 模块跑 CRS v4 检测。
+type CaddyConfig struct {
+	ConfigDir     string `mapstructure:"config_dir"` // 站点反代片段目录（{domain}.caddy，import 进主 Caddyfile）
+	CorazaDir     string `mapstructure:"coraza_dir"` // 每站点 Coraza/CRS 规则目录（{domain}.conf）
+	Caddyfile     string `mapstructure:"caddyfile"`  // 主 Caddyfile 路径（reload/validate 用）
+	ReloadCmd     string `mapstructure:"reload_cmd"` // 留空默认 `caddy reload --config <caddyfile>`
+	TestCmd       string `mapstructure:"test_cmd"`   // 留空默认 `caddy validate --config <caddyfile>`
+	BackupEnabled bool   `mapstructure:"backup_enabled"`
+	// MetricsURL 指向 Caddy admin 的 Prometheus 端点（默认 http://127.0.0.1:2019/metrics）。
+	// 配了才采集真实 RPS / 进行中请求；留空则 RPS=0。
+	MetricsURL string `mapstructure:"metrics_url"`
+	// AuditLog 指向 Coraza JSON 审计日志（SecAuditLogFormat JSON）。配了才启用 tailer
+	// —— 真实采集攻击事件上报 + 算拦截率。留空则不采集。
+	AuditLog string `mapstructure:"audit_log"`
 }
 
 // SafeLineConfig 雷池（长亭 SafeLine）引擎对接参数。当前为骨架，

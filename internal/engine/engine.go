@@ -8,6 +8,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 
 	"github.com/waf-agent/internal/config"
 )
@@ -61,6 +62,8 @@ func New(cfg *config.Config) Engine {
 	switch normalizeType(cfg.Engine.Type) {
 	case "openresty":
 		return NewOpenRestyEngine(cfg)
+	case "caddy-coraza":
+		return NewCaddyEngine(cfg)
 	case "safeline":
 		return NewSafeLineEngine(cfg)
 	default:
@@ -69,9 +72,11 @@ func New(cfg *config.Config) Engine {
 }
 
 func normalizeType(t string) string {
-	switch t {
+	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "openresty", "open-resty", "openrestry": // 容忍常见拼写
 		return "openresty"
+	case "caddy-coraza", "caddy", "coraza", "caddycoraza": // Caddy + OWASP Coraza
+		return "caddy-coraza"
 	case "safeline", "safe-line", "雷池", "leichi":
 		return "safeline"
 	default:
